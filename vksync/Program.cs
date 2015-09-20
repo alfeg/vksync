@@ -67,7 +67,21 @@ namespace vkmusics
             if (string.IsNullOrWhiteSpace(args.Token)) throw new Exception("Token is not specified. Use -token <token>");
             if (string.IsNullOrWhiteSpace(args.Folder)) throw new Exception("Folder is not specified. Use -folder <folderPath>");
 
-            var downloader = new VKDownloader(args, new ConsoleReporter());
+            var downloader = new VKDownloader(args, new ConsoleReporter<ConsoleState>(new ConsoleState(), (state) =>
+            {
+                var sb = ImmutableList<string>.Empty;
+
+                sb = sb.Add(state.CurrentOperation);
+                sb = sb.Add("");
+                sb = sb.Add(state.CurrentOperationStatus);
+
+                foreach (var item in state.Downloads)
+                {
+                    sb = sb.Add($"[{item.PercentComplete}]: {item.Title}");
+                }
+
+                return sb;
+            }));
 
             if (downloader.Execute().Result)
             {
@@ -133,22 +147,26 @@ namespace vkmusics
 
         public bool Save { get; set; }
     }
-    public class ConsoleReporter
+
+
+    public class ConsoleReporter<T>
     {
-        ConsoleState state = new ConsoleState();
-        BlockingCollection<Action<ConsoleState>> _updateQueue = new BlockingCollection<Action<ConsoleState>>();
+        T state = default(T);
+
+        BlockingCollection<Action<T>> _updateQueue = new BlockingCollection<Action<T>>();
         bool isDirty = true;
 
-        int DefaultCursorPosition { get; set; } = Console.CursorTop;
-
         VirtualConsole console = new VirtualConsole();
+        private readonly Func<T, IList<string>> Renderer;
 
-        public ConsoleReporter()
+        public ConsoleReporter(T initialState, Func<T, IList<string>> renderer)
         {
+            this.state = initialState;
+            this.Renderer = renderer;
             Task.Factory.StartNew(UpdateQueueWorker);
         }
 
-        public void Update(Action<ConsoleState> cs)
+        public void Update(Action<T> cs)
         {
             _updateQueue.Add(cs);
         }
@@ -180,23 +198,29 @@ namespace vkmusics
         {
             if (!isDirty) return;
 
-            var sb = ImmutableList<string>.Empty;
-            sb = sb.Add(state.CurrentOperation);
-            sb = sb.Add("");
-            sb = sb.Add(state.CurrentOperationStatus);
+            var sb = Renderer(state);
 
-            foreach (var item in state.Downloads)
-            {
-                sb = sb.Add($"[{item.PercentComplete}]: {item.Title}");
-            }
+            //var sb = 
+            //var sb = ImmutableList<string>.Empty;
+            //sb = sb.Add(state.CurrentOperation);
+            //sb = sb.Add("");
+            //sb = sb.Add(state.CurrentOperationStatus);
+
+            //foreach (var item in state.Downloads)
+            //{
+            //    sb = sb.Add($"[{item.PercentComplete}]: {item.Title}");
+            //}
 
             console.Render(sb);
         }
+
+        
     }
 
     public class VirtualConsole
     {
         public IImmutableList<string> State { get; set; } = ImmutableList<string>.Empty;
+        int DefaultCursorPosition { get; set; } = Console.CursorTop;
 
         int maxWidth = 80;
 
@@ -205,7 +229,7 @@ namespace vkmusics
             maxWidth = Console.WindowWidth;
         }
 
-        public void Render(IImmutableList<string> newState)
+        public void Render(IList<string> newState)
         {
             for (var i = 0; i < Math.Max(newState.Count, State.Count); i++)
             {
@@ -218,15 +242,15 @@ namespace vkmusics
                 }
             }
 
-            Console.SetCursorPosition(0, Math.Max(newState.Count, State.Count));
+            Console.SetCursorPosition(0, DefaultCursorPosition + Math.Max(newState.Count, State.Count));
             
-            State = newState;
+            State = ImmutableList<string>.Empty.AddRange(newState);
         }
 
         private void RenderLine(int row, string line)
         {
-            Console.SetCursorPosition(0, row);
-            var res = line.Substring(0, Math.Min(line.Length, maxWidth)).PadRight(maxWidth);
+            Console.SetCursorPosition(0, DefaultCursorPosition + row);
+            var res = line.Substring(0, Math.Min(line.Length, maxWidth)).PadRight(maxWidth, ' ');
             Console.Write(res);
         }
 
@@ -235,6 +259,7 @@ namespace vkmusics
             return b.GetString(a.GetBytes(inputStr));
         }
     }
+
     public class ConsoleState
     {
         public string CurrentOperation { get; set; }
@@ -247,7 +272,8 @@ namespace vkmusics
             public string Id { get; set; }
             public string Title { get; set; }
             public string PercentComplete { get; set; }
-        }
+            public long TotalBytes { get; set; }
+        }        
     }
 
     public class VKDownloader
@@ -255,12 +281,12 @@ namespace vkmusics
         DownloaderArgs args;
         const int AppId = 4509223;
         private VkApi client;
-        private ConsoleReporter reporter;
+        private ConsoleReporter<ConsoleState> reporter;
 
-        public VKDownloader(DownloaderArgs args, ConsoleReporter reporter)
+        public VKDownloader(DownloaderArgs args, ConsoleReporter<ConsoleState> reporter)
         {
             this.args = args;
-            this.reporter = reporter;
+            this.reporter = reporter;            
 
             if (string.IsNullOrWhiteSpace(args.Folder)) throw new Exception("Folder should be specified! '-folder'");
         }
@@ -275,7 +301,7 @@ namespace vkmusics
 
             reporter.Update(s => s.CurrentOperationStatus = "Getting user info");
             var userInfo = await Users_Get(args.UserId);
-            reporter.Update(s => s.CurrentOperation = $"Downloading music from {userInfo.LastName}, {userInfo.FirstName}");
+            reporter.Update(s => s.CurrentOperation = $"Downloading music from {userInfo.LastName}, {userInfo.FirstName} to {args.Folder}");
 
             args.UserId = userInfo.Id;
             args.Folder = Path.Combine(args.Folder, $"{userInfo.FirstName}_{userInfo.LastName}");
@@ -291,18 +317,9 @@ namespace vkmusics
 
             var tasks = new List<Task>();
 
-            for (var i = 0; i < 16; i++)
-            {
-                tasks.Add(Task.Factory.StartNew(() =>
-                {
-                    foreach (var music in downloadCollection.GetConsumingEnumerable())
-                    {
-                        Download(music);
-                    }
-                }));
-            }
+            SpinWorkers(downloadCollection, tasks, 4);
 
-            foreach (var music in musicInfo.Where(m =>  !filesInDestination.Contains(CleanFileName(m.Title))))
+            foreach (var music in musicInfo.Where(m => !filesInDestination.Contains(CleanFileName(m.Title))))
             {
                 downloadCollection.Add(music);
             }
@@ -312,6 +329,23 @@ namespace vkmusics
             Task.WaitAll(tasks.ToArray());
 
             return true;
+        }
+
+        private void SpinWorkers(BlockingCollection<Music> downloadCollection, List<Task> tasks, int workersCount)
+        {
+            for (var i = 0; i < workersCount; i++)
+            {
+                tasks.Add(Task.Factory.StartNew(() =>
+                {
+                    int itemsDownloaded = 0;
+                    
+                    foreach (var music in downloadCollection.GetConsumingEnumerable())
+                    {
+                        Download(music);
+                        itemsDownloaded++;
+                    }                    
+                }));
+            }
         }
 
         internal bool Download(Music music)
@@ -435,21 +469,7 @@ namespace vkmusics
             };
         }
     }
-
-    public class Progress
-    {
-        public long TotalBytes { get; set; }
-        public long ProgressBytes { get; set; }
-
-        public int ProgressState
-        {
-            get
-            {
-                return (int)Math.Round(ProgressBytes / TotalBytes * 100.0, 0);
-            }
-        }
-    }
-
+    
     public class UserInfo
     {
         public string Id { get; set; }
