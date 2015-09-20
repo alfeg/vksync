@@ -6,7 +6,6 @@ using System.IO;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json;
 using System.Collections.Concurrent;
-using System.Net.Http;
 using System.Text;
 using Clee;
 using YAVAW;
@@ -58,26 +57,6 @@ namespace vkmusics
     {
         T Act(T state);
     }
-
-    //public class UpdateProgress : IAction<ConsoleState>
-    //{
-    //    public UpdateProgress(long downloadId, long bytesDownloaded, int progressPercentage)
-    //    {
-    //        DownloadId = downloadId;
-    //        BytesDownloaded = bytesDownloaded;
-    //        ProgressPercentage = progressPercentage;
-    //    }
-
-    //    public long BytesDownloaded { get; private set; }
-    //    public long DownloadId { get; private set; }
-    //    public int ProgressPercentage { get; private set; }
-
-    //    public ConsoleState Act(ConsoleState state)
-    //    {
-    //        var downloadState = state.Downloads.SingleOrDefault(d => d.Id == DownloadId);
-    //        return state.WithDownloads(state.Downloads.SetItem(DownloadId, ))
-    //    }
-    //}
 
     [Command(Description = "Syncronize music for accounts", Name = "sync")]
     public class SyncCommand : ICommand<DownloaderArgs>
@@ -170,12 +149,17 @@ namespace vkmusics
 
         VirtualConsole console = new VirtualConsole();
         private readonly Func<T, IList<string>> Renderer;
+        Stopwatch stopwatch = new Stopwatch();
+        private TimeSpan lastrun;
 
         public ConsoleReporter(T initialState, Func<T, IList<string>> renderer)
         {
             this.state = initialState;
             this.Renderer = renderer;
             Task.Factory.StartNew(UpdateQueueWorker);
+            Task.Factory.StartNew(RenderWorker);
+            stopwatch.Start();
+            lastrun = stopwatch.Elapsed;
         }
 
         public void Update(Action<T> cs)
@@ -192,8 +176,12 @@ namespace vkmusics
         {
             while (true)
             {
-                Render();
-                Thread.Sleep(100);
+                if (stopwatch.Elapsed - lastrun > TimeSpan.FromSeconds(1 / 30.0))
+                {
+                    Render();
+                    lastrun = stopwatch.Elapsed;
+                }
+                Thread.SpinWait(10);
             }
         }
 
@@ -202,7 +190,7 @@ namespace vkmusics
             foreach (var update in _updateQueue.GetConsumingEnumerable())
             {
                 update(state);
-                Render();
+                isDirty = true;
             }
         }
 
@@ -211,7 +199,8 @@ namespace vkmusics
             if (!isDirty) return;
             var sb = Renderer(state);
             console.Render(sb);
-        }        
+            isDirty = false;
+        }
     }
 
     public class VirtualConsole
@@ -240,7 +229,7 @@ namespace vkmusics
             }
 
             Console.SetCursorPosition(0, DefaultCursorPosition + Math.Max(newState.Count, State.Count));
-            
+
             State = ImmutableList<string>.Empty.AddRange(newState);
         }
 
@@ -273,26 +262,6 @@ namespace vkmusics
             public string PercentComplete { get; set; }
             public long TotalBytes { get; set; }
         }
-
-        //public ConsoleState WithCurrentOperation(string operation = null, string operationStatus = null)
-        //{
-        //    return new ConsoleState
-        //    {
-        //        CurrentOperation = operation ?? CurrentOperation,
-        //        CurrentOperationStatus = operationStatus ?? CurrentOperationStatus,
-        //        Downloads = Downloads
-        //    };
-        //}
-
-        //public ConsoleState WithDownloads(ImmutableList<DownloadState> downloads)
-        //{
-        //    return new ConsoleState
-        //    {
-        //        CurrentOperation = CurrentOperation,
-        //        CurrentOperationStatus = CurrentOperationStatus,
-        //        Downloads = downloads
-        //    };
-        //}
     }
 
     public class VKDownloader
@@ -324,7 +293,8 @@ namespace vkmusics
 
                 sb = sb.Add("");
 
-                if (state.TotalBytes > 0) {
+                if (state.TotalBytes > 0)
+                {
                     var totalMb = state.TotalBytes / (double)(1024 * 1024);
                     var speed = totalMb / stopwatch.Elapsed.TotalSeconds;
 
@@ -386,53 +356,55 @@ namespace vkmusics
                 tasks.Add(Task.Factory.StartNew(() =>
                 {
                     int itemsDownloaded = 0;
-                    
+
                     foreach (var music in downloadCollection.GetConsumingEnumerable())
                     {
                         Download(music);
                         itemsDownloaded++;
-                    }                    
+                    }
                 }));
             }
         }
 
         internal bool Download(Music music)
         {
-            var client = new WebClient();
+            var targetFilename = Path.Combine(args.Folder, $"{CleanFileName(music.Title)}.mp3");
 
-            var downloadStateItem = new ConsoleState.DownloadState { Id = music.Id, Title = music.Title, PercentComplete = " NEW" };
+            if (File.Exists(targetFilename)) return true;
 
-            reporter.Update(s => { s.Downloads = s.Downloads.Add(downloadStateItem); });
-            long lastBytes = 0;
-
-            var locker = new ManualResetEventSlim(false);
-
-            client.DownloadProgressChanged += (o, downloadProgress) =>
+            using (var client = new WebClient())
             {
-                reporter.Update(s =>
+                var downloadStateItem = new ConsoleState.DownloadState { Id = music.Id, Title = music.Title, PercentComplete = " NEW" };
+
+                reporter.Update(s => { s.Downloads = s.Downloads.Add(downloadStateItem); });
+                long lastBytes = 0;
+
+                var locker = new ManualResetEventSlim(false);
+
+                client.DownloadProgressChanged += (o, downloadProgress) =>
                 {
-                    downloadStateItem.PercentComplete = $"{downloadProgress.ProgressPercentage}%".PadLeft(4, ' ');
+                    reporter.Update(s =>
+                    {
+                        downloadStateItem.PercentComplete = $"{downloadProgress.ProgressPercentage}%".PadLeft(4, ' ');
 
-                    s.TotalBytes += downloadProgress.BytesReceived - lastBytes;
-                    lastBytes = downloadProgress.BytesReceived;
-                });
-            };
+                        s.TotalBytes += downloadProgress.BytesReceived - lastBytes;
+                        lastBytes = downloadProgress.BytesReceived;
+                    });
+                };
 
-            client.DownloadFileCompleted += (o, completed) =>
-            {
-                locker.Set();
-            };
+                client.DownloadFileCompleted += (o, completed) =>
+                {
+                    locker.Set();
+                };
 
-            var path = Path.Combine(args.Folder, $"{CleanFileName(music.Title)}.mp3");
+                client.DownloadFileAsync(new Uri(music.Url), targetFilename);
 
-            client.DownloadFileAsync(new Uri(music.Url), path);
+                locker.Wait();
 
-            locker.Wait();
+                reporter.Update(s => { downloadStateItem.PercentComplete = "DONE"; });
 
-            reporter.Update(s => { downloadStateItem.PercentComplete = "DONE"; });
-
-            return true;
-
+                return true;
+            }
         }
 
         string ProgressState(long read, long total)
@@ -457,10 +429,7 @@ namespace vkmusics
         {
             foreach (var file in Directory.EnumerateFiles(args.Folder, "*.mp3"))
             {
-                yield return new Music
-                {
-                    Title = CleanFileName(Path.GetFileNameWithoutExtension(file))
-                };
+                yield return new Music { Title = CleanFileName(Path.GetFileNameWithoutExtension(file)) };
             }
         }
 
@@ -530,7 +499,7 @@ namespace vkmusics
             };
         }
     }
-    
+
     public class UserInfo
     {
         public string Id { get; set; }
