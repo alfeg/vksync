@@ -13,6 +13,7 @@ using YAVAW;
 using System.Collections.Immutable;
 using System.Threading;
 using System.Net;
+using System.Diagnostics;
 
 namespace vkmusics
 {
@@ -53,6 +54,31 @@ namespace vkmusics
         public string Token { get; set; }
     }
 
+    public interface IAction<T>
+    {
+        T Act(T state);
+    }
+
+    //public class UpdateProgress : IAction<ConsoleState>
+    //{
+    //    public UpdateProgress(long downloadId, long bytesDownloaded, int progressPercentage)
+    //    {
+    //        DownloadId = downloadId;
+    //        BytesDownloaded = bytesDownloaded;
+    //        ProgressPercentage = progressPercentage;
+    //    }
+
+    //    public long BytesDownloaded { get; private set; }
+    //    public long DownloadId { get; private set; }
+    //    public int ProgressPercentage { get; private set; }
+
+    //    public ConsoleState Act(ConsoleState state)
+    //    {
+    //        var downloadState = state.Downloads.SingleOrDefault(d => d.Id == DownloadId);
+    //        return state.WithDownloads(state.Downloads.SetItem(DownloadId, ))
+    //    }
+    //}
+
     [Command(Description = "Syncronize music for accounts", Name = "sync")]
     public class SyncCommand : ICommand<DownloaderArgs>
     {
@@ -67,21 +93,7 @@ namespace vkmusics
             if (string.IsNullOrWhiteSpace(args.Token)) throw new Exception("Token is not specified. Use -token <token>");
             if (string.IsNullOrWhiteSpace(args.Folder)) throw new Exception("Folder is not specified. Use -folder <folderPath>");
 
-            var downloader = new VKDownloader(args, new ConsoleReporter<ConsoleState>(new ConsoleState(), (state) =>
-            {
-                var sb = ImmutableList<string>.Empty;
-
-                sb = sb.Add(state.CurrentOperation);
-                sb = sb.Add("");
-                sb = sb.Add(state.CurrentOperationStatus);
-
-                foreach (var item in state.Downloads)
-                {
-                    sb = sb.Add($"[{item.PercentComplete}]: {item.Title}");
-                }
-
-                return sb;
-            }));
+            var downloader = new VKDownloader(args);
 
             if (downloader.Execute().Result)
             {
@@ -197,24 +209,9 @@ namespace vkmusics
         public void Render()
         {
             if (!isDirty) return;
-
             var sb = Renderer(state);
-
-            //var sb = 
-            //var sb = ImmutableList<string>.Empty;
-            //sb = sb.Add(state.CurrentOperation);
-            //sb = sb.Add("");
-            //sb = sb.Add(state.CurrentOperationStatus);
-
-            //foreach (var item in state.Downloads)
-            //{
-            //    sb = sb.Add($"[{item.PercentComplete}]: {item.Title}");
-            //}
-
             console.Render(sb);
-        }
-
-        
+        }        
     }
 
     public class VirtualConsole
@@ -265,7 +262,9 @@ namespace vkmusics
         public string CurrentOperation { get; set; }
         public string CurrentOperationStatus { get; set; }
 
-        public List<DownloadState> Downloads { get; set; } = new List<DownloadState>();
+        public long TotalBytes { get; set; } = 0;
+
+        public ImmutableList<DownloadState> Downloads { get; set; } = ImmutableList<DownloadState>.Empty;
 
         public class DownloadState
         {
@@ -273,7 +272,27 @@ namespace vkmusics
             public string Title { get; set; }
             public string PercentComplete { get; set; }
             public long TotalBytes { get; set; }
-        }        
+        }
+
+        //public ConsoleState WithCurrentOperation(string operation = null, string operationStatus = null)
+        //{
+        //    return new ConsoleState
+        //    {
+        //        CurrentOperation = operation ?? CurrentOperation,
+        //        CurrentOperationStatus = operationStatus ?? CurrentOperationStatus,
+        //        Downloads = Downloads
+        //    };
+        //}
+
+        //public ConsoleState WithDownloads(ImmutableList<DownloadState> downloads)
+        //{
+        //    return new ConsoleState
+        //    {
+        //        CurrentOperation = CurrentOperation,
+        //        CurrentOperationStatus = CurrentOperationStatus,
+        //        Downloads = downloads
+        //    };
+        //}
     }
 
     public class VKDownloader
@@ -282,11 +301,38 @@ namespace vkmusics
         const int AppId = 4509223;
         private VkApi client;
         private ConsoleReporter<ConsoleState> reporter;
+        private Stopwatch stopwatch = new Stopwatch();
 
-        public VKDownloader(DownloaderArgs args, ConsoleReporter<ConsoleState> reporter)
+        public VKDownloader(DownloaderArgs args)
         {
             this.args = args;
-            this.reporter = reporter;            
+
+            reporter = new ConsoleReporter<ConsoleState>(new ConsoleState(), (state) =>
+            {
+                var sb = ImmutableList<string>.Empty;
+
+                sb = sb.Add(state.CurrentOperation);
+                sb = sb.Add("");
+
+                sb = sb.Add(state.CurrentOperationStatus);
+                sb = sb.Add("");
+
+                foreach (var item in state.Downloads)
+                {
+                    sb = sb.Add($"[{item.PercentComplete}]: {item.Title}");
+                }
+
+                sb = sb.Add("");
+
+                if (state.TotalBytes > 0) {
+                    var totalMb = state.TotalBytes / (double)(1024 * 1024);
+                    var speed = totalMb / stopwatch.Elapsed.TotalSeconds;
+
+                    sb = sb.Add($"So far, downloaded {totalMb.ToString("0.00")} Mb - {speed.ToString("0.00")} Mb/s");
+                }
+
+                return sb;
+            });
 
             if (string.IsNullOrWhiteSpace(args.Folder)) throw new Exception("Folder should be specified! '-folder'");
         }
@@ -318,6 +364,8 @@ namespace vkmusics
             var tasks = new List<Task>();
 
             SpinWorkers(downloadCollection, tasks, 4);
+
+            stopwatch.Start();
 
             foreach (var music in musicInfo.Where(m => !filesInDestination.Contains(CleanFileName(m.Title))))
             {
@@ -354,20 +402,33 @@ namespace vkmusics
 
             var downloadStateItem = new ConsoleState.DownloadState { Id = music.Id, Title = music.Title, PercentComplete = " NEW" };
 
-            reporter.Update(s => { s.Downloads.Add(downloadStateItem); });
+            reporter.Update(s => { s.Downloads = s.Downloads.Add(downloadStateItem); });
+            long lastBytes = 0;
+
+            var locker = new ManualResetEventSlim(false);
 
             client.DownloadProgressChanged += (o, downloadProgress) =>
             {
                 reporter.Update(s =>
                 {
                     downloadStateItem.PercentComplete = $"{downloadProgress.ProgressPercentage}%".PadLeft(4, ' ');
+
+                    s.TotalBytes += downloadProgress.BytesReceived - lastBytes;
+                    lastBytes = downloadProgress.BytesReceived;
                 });
+            };
+
+            client.DownloadFileCompleted += (o, completed) =>
+            {
+                locker.Set();
             };
 
             var path = Path.Combine(args.Folder, $"{CleanFileName(music.Title)}.mp3");
 
-            client.DownloadFileTaskAsync(new Uri(music.Url), path).Wait();
-            
+            client.DownloadFileAsync(new Uri(music.Url), path);
+
+            locker.Wait();
+
             reporter.Update(s => { downloadStateItem.PercentComplete = "DONE"; });
 
             return true;
