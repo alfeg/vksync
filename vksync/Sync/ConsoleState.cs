@@ -9,6 +9,9 @@ namespace vksync.Sync
 
         public long TotalBytes { get; set; } = 0;
 
+        public int ItemsDownloaded { get; set; } = 0;
+        public long TotalSongsToDownload { get; set; } = -1;
+
         public ImmutableList<DownloadState> Downloads { get; set; } = ImmutableList<DownloadState>.Empty;
 
         public class DownloadState

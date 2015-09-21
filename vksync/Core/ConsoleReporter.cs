@@ -1,72 +1,88 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using Timer = System.Timers.Timer;
 
 namespace vksync.Core
 {
     public class ConsoleReporter<T>
     {
-        T state = default(T);
+        T _state;
 
-        BlockingCollection<Action<T>> _updateQueue = new BlockingCollection<Action<T>>();
-        bool isDirty = true;
+        readonly BlockingCollection<Func<T,T>> _updateQueue = new BlockingCollection<Func<T, T>>();
+        bool _isDirty = true;
 
-        VirtualConsole console = new VirtualConsole();
-        private readonly Func<T, IList<string>> Renderer;
-        Stopwatch stopwatch = new Stopwatch();
-        private TimeSpan lastrun;
+        readonly VirtualConsole _console = new VirtualConsole();
+        private readonly Func<T, IList<string>> _renderer;
 
         public ConsoleReporter(T initialState, Func<T, IList<string>> renderer)
         {
-            this.state = initialState;
-            this.Renderer = renderer;
+            _state = initialState;
+            _renderer = renderer;
+
             Task.Factory.StartNew(UpdateQueueWorker);
-            Task.Factory.StartNew(RenderWorker);
-            stopwatch.Start();
-            lastrun = stopwatch.Elapsed;
+            RunEvery(Render, 1000 / 30.0);
         }
 
-        public void Update(Action<T> cs)
+        public void Update(Func<T, T> cs)
         {
             _updateQueue.Add(cs);
         }
 
-        internal void ScheduleRender()
+        // shim.
+        public void Update(Action<T> update)
         {
-            isDirty = true;
+            Update(state =>
+            {
+                update(state);
+                return state;
+            });
         }
 
-        private void RenderWorker()
+        internal void ScheduleRender()
         {
-            while (true)
+            _isDirty = true;
+        }
+
+        private void RunEvery(Action action, double ms)
+        {
+            var timer = new Timer(ms);
+            bool isActing = false;
+            
+            timer.Elapsed += (sender, args) =>
             {
-                if (stopwatch.Elapsed - lastrun > TimeSpan.FromSeconds(1 / 30.0))
+                if (Volatile.Read(ref isActing)) return;
+                try
                 {
-                    Render();
-                    lastrun = stopwatch.Elapsed;
+                    Volatile.Write(ref isActing, true);
+                    action();
                 }
-                Thread.SpinWait(10);
-            }
+                finally
+                {
+                    Volatile.Write(ref isActing, false);
+                }
+            };
+
+            timer.Start();
         }
 
         private void UpdateQueueWorker()
         {
             foreach (var update in _updateQueue.GetConsumingEnumerable())
             {
-                update(state);
-                isDirty = true;
+                _state = update(_state);
+                _isDirty = true;
             }
         }
 
         public void Render()
         {
-            if (!isDirty) return;
-            var sb = Renderer(state);
-            console.Render(sb);
-            isDirty = false;
+            if (!_isDirty) return;
+            var sb = _renderer(_state);
+            _console.Render(sb);
+            _isDirty = false;
         }
     }
 }

@@ -15,17 +15,17 @@ namespace vksync.Sync
 {
     public class VKDownloader
     {
-        DownloaderArgs args;
+        readonly DownloaderArgs _args;
         const int AppId = 4509223;
-        private VkApi client;
-        private ConsoleReporter<ConsoleState> reporter;
-        private Stopwatch stopwatch = new Stopwatch();
+        private VkApi _client;
+        private readonly ConsoleReporter<ConsoleState> _reporter;
+        private readonly Stopwatch _stopwatch = new Stopwatch();
 
         public VKDownloader(DownloaderArgs args)
         {
-            this.args = args;
+            _args = args;
 
-            reporter = new ConsoleReporter<ConsoleState>(new ConsoleState(), (state) =>
+            _reporter = new ConsoleReporter<ConsoleState>(new ConsoleState(), (state) =>
             {
                 var sb = ImmutableList<string>.Empty;
 
@@ -45,9 +45,20 @@ namespace vksync.Sync
                 if (state.TotalBytes > 0)
                 {
                     var totalMb = state.TotalBytes / (double)(1024 * 1024);
-                    var speed = totalMb / stopwatch.Elapsed.TotalSeconds;
+                    var avgSpeed = totalMb / _stopwatch.Elapsed.TotalSeconds;
 
-                    sb = sb.Add($"So far, downloaded {totalMb.ToString("0.00")} Mb - {speed.ToString("0.00")} Mb/s");
+                    sb = sb.Add($"So far, downloaded {state.ItemsDownloaded} songs");
+                    sb = sb.Add($"{totalMb.ToString("0.00")} Mb - {avgSpeed.ToString("0.00")} Mb/s");
+
+                    if (state.TotalSongsToDownload > 0)
+                    {
+                        var songAvgSize = totalMb / (double)(state.ItemsDownloaded == 0 ? 1 : state.ItemsDownloaded);
+                        var estSizeToDownload = songAvgSize*state.TotalSongsToDownload;
+                        
+                        var eta = TimeSpan.FromSeconds((estSizeToDownload - totalMb) / avgSpeed);
+                        
+                        sb = sb.Add($"Elapsed: {_stopwatch.Elapsed.ToString("00:00:00")} ETA: {eta.ToString("00:00:00")}");
+                    }
                 }
 
                 return sb;
@@ -56,25 +67,23 @@ namespace vksync.Sync
             if (string.IsNullOrWhiteSpace(args.Folder)) throw new Exception("Folder should be specified! '-folder'");
         }
 
-        string UserId { get; set; }
-
         internal async Task<bool> Execute()
         {
-            reporter.Update(s => s.CurrentOperation = "Communicating with VK");
+            _reporter.Update(s => s.CurrentOperation = "Communicating with VK");
 
-            client = new VkApi(AppId.ToString(), args.Token);
+            _client = new VkApi(AppId.ToString(), _args.Token);
 
-            reporter.Update(s => s.CurrentOperationStatus = "Getting user info");
-            var userInfo = await Users_Get(args.UserId);
-            reporter.Update(s => s.CurrentOperation = $"Downloading music from {userInfo.LastName}, {userInfo.FirstName} to {args.Folder}");
+            _reporter.Update(s => s.CurrentOperationStatus = "Getting user info");
+            var userInfo = await Users_Get(_args.UserId);
+            _reporter.Update(s => s.CurrentOperation = $"Downloading music from {userInfo.LastName}, {userInfo.FirstName} to {_args.Folder}");
 
-            args.UserId = userInfo.Id;
-            args.Folder = Path.Combine(args.Folder, $"{userInfo.FirstName}_{userInfo.LastName}");
-            Directory.CreateDirectory(args.Folder);
+            _args.UserId = userInfo.Id;
+            _args.Folder = Path.Combine(_args.Folder, $"{userInfo.FirstName}_{userInfo.LastName}");
+            Directory.CreateDirectory(_args.Folder);
 
-            reporter.Update(s => s.CurrentOperationStatus = $"Getting full music list");
+            _reporter.Update(s => s.CurrentOperationStatus = $"Getting full music list");
             var musicInfo = GetMusicInfo().ToList();
-            reporter.Update(s => s.CurrentOperationStatus = $"Getting full music list. Done");
+            _reporter.Update(s => s.CurrentOperationStatus = $"Getting full music list. Done");
 
             var filesInDestination = GetFilesInDestination().Select(f => f.Title).ToImmutableHashSet();
 
@@ -84,9 +93,12 @@ namespace vksync.Sync
 
             SpinWorkers(downloadCollection, tasks, 4);
 
-            stopwatch.Start();
+            _stopwatch.Start();
 
-            foreach (var music in musicInfo.Where(m => !filesInDestination.Contains(CleanFileName(m.Title))))
+            var songsToDownload = musicInfo.Where(m => !filesInDestination.Contains(CleanFileName(m.Title))).ToList();
+            _reporter.Update(s => s.TotalSongsToDownload = songsToDownload.Count);
+
+            foreach (var music in songsToDownload)
             {
                 downloadCollection.Add(music);
             }
@@ -104,12 +116,15 @@ namespace vksync.Sync
             {
                 tasks.Add(Task.Factory.StartNew(() =>
                 {
-                    int itemsDownloaded = 0;
-
                     foreach (var music in downloadCollection.GetConsumingEnumerable())
                     {
                         Download(music);
-                        itemsDownloaded++;
+
+                        _reporter.Update(state =>
+                        {
+                            state.ItemsDownloaded++;
+                            return state;
+                        });
                     }
                 }));
             }
@@ -117,7 +132,7 @@ namespace vksync.Sync
 
         internal bool Download(Music music)
         {
-            var targetFilename = Path.Combine(args.Folder, $"{CleanFileName(music.Title)}.mp3");
+            var targetFilename = Path.Combine(_args.Folder, $"{CleanFileName(music.Title)}.mp3");
 
             if (File.Exists(targetFilename)) return true;
 
@@ -125,14 +140,14 @@ namespace vksync.Sync
             {
                 var downloadStateItem = new ConsoleState.DownloadState { Id = music.Id, Title = music.Title, PercentComplete = " NEW" };
 
-                reporter.Update(s => { s.Downloads = s.Downloads.Add(downloadStateItem); });
+                _reporter.Update(s => { s.Downloads = s.Downloads.Add(downloadStateItem); });
                 long lastBytes = 0;
 
                 var locker = new ManualResetEventSlim(false);
 
                 client.DownloadProgressChanged += (o, downloadProgress) =>
                 {
-                    reporter.Update(s =>
+                    _reporter.Update(s =>
                     {
                         downloadStateItem.PercentComplete = $"{downloadProgress.ProgressPercentage}%".PadLeft(4, ' ');
 
@@ -150,7 +165,7 @@ namespace vksync.Sync
 
                 locker.Wait();
 
-                reporter.Update(s => { downloadStateItem.PercentComplete = "DONE"; });
+                _reporter.Update(s => { downloadStateItem.PercentComplete = "DONE"; });
 
                 return true;
             }
@@ -158,7 +173,7 @@ namespace vksync.Sync
          
         internal IEnumerable<Music> GetFilesInDestination()
         {
-            foreach (var file in Directory.EnumerateFiles(args.Folder, "*.mp3"))
+            foreach (var file in Directory.EnumerateFiles(_args.Folder, "*.mp3"))
             {
                 yield return new Music { Title = CleanFileName(Path.GetFileNameWithoutExtension(file)) };
             }
@@ -181,9 +196,9 @@ namespace vksync.Sync
 
                 do
                 {
-                    var response = await client.CallApiMethod(ApiMethod.audio_get, new Dictionary<string, string>
+                    var response = await _client.CallApiMethod(ApiMethod.audio_get, new Dictionary<string, string>
                     {
-                        ["owner_id"] = args.UserId,
+                        ["owner_id"] = _args.UserId,
                         ["count"] = batch.ToString(),
                         ["offset"] = (offset * batch).ToString()
                     });
@@ -221,7 +236,7 @@ namespace vksync.Sync
                 requestData.Add("user_ids", id);
             }
 
-            var response = await client.CallApiMethod(ApiMethod.users_get, requestData);
+            var response = await _client.CallApiMethod(ApiMethod.users_get, requestData);
 
             return new UserInfo
             {

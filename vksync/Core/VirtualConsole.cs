@@ -7,13 +7,13 @@ namespace vksync.Core
     public class VirtualConsole
     {
         public IImmutableList<string> State { get; set; } = ImmutableList<string>.Empty;
-        int DefaultCursorPosition { get; set; } = Console.CursorTop;
+        int DefaultCursorPosition { get; } = Console.CursorTop;
 
-        int maxWidth = 80;
+        readonly int _maxWidth;
 
         public VirtualConsole()
         {
-            maxWidth = Console.WindowWidth;
+            _maxWidth = Console.WindowWidth;
         }
 
         public void Render(IList<string> newState)
@@ -37,7 +37,7 @@ namespace vksync.Core
         private void RenderLine(int row, string line)
         {
             Console.SetCursorPosition(0, DefaultCursorPosition + row);
-            var res = line.Substring(0, Math.Min(line.Length, maxWidth)).PadRight(maxWidth, ' ');
+            var res = line.Substring(0, Math.Min(line.Length, _maxWidth)).PadRight(_maxWidth, ' ');
             Console.Write(res);
         }        
     }
