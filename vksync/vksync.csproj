@@ -63,8 +63,20 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="AddArguments.cs" />
+    <Compile Include="AddCommand.cs" />
+    <Compile Include="Core\Config.cs" />
+    <Compile Include="Core\ConsoleReporter.cs" />
+    <Compile Include="Sync\ConsoleState.cs" />
+    <Compile Include="Sync\DownloaderArgs.cs" />
+    <Compile Include="IAction.cs" />
+    <Compile Include="Sync\Music.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Sync\SyncCommand.cs" />
+    <Compile Include="Sync\UserInfo.cs" />
+    <Compile Include="Core\VirtualConsole.cs" />
+    <Compile Include="Sync\VKDownloader.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
