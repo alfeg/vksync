@@ -7,34 +7,34 @@ namespace vksync.Core
 {
     public class Config
     {
-        string filePath { get; set; } = Environment.ExpandEnvironmentVariables(@"%APPDATA%\.vkmusic\defaults");
+        string FilePath { get; } = Environment.ExpandEnvironmentVariables(@"%APPDATA%\.vkmusic\defaults");
 
         public Config()
         {
-            if (!Directory.Exists(Path.GetDirectoryName(filePath)))
+            if (!Directory.Exists(Path.GetDirectoryName(FilePath)))
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(filePath));
+                Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
             }
 
-            if (!File.Exists(filePath))
+            if (!File.Exists(FilePath))
             {
-                File.WriteAllText(filePath, "{}");
+                File.WriteAllText(FilePath, "{}");
             }
         }
 
         public string Get(string key)
         {
-            var content = File.ReadAllText(filePath);
+            var content = File.ReadAllText(FilePath);
             JToken jsn = JsonConvert.DeserializeObject(content) as JToken;
             return jsn[key]?.ToObject<string>();
         }
 
         public void Set(string key, string value)
         {
-            var content = File.ReadAllText(filePath);
+            var content = File.ReadAllText(FilePath);
             JToken jsn = JsonConvert.DeserializeObject(content) as JToken;
             jsn[key] = value;
-            File.WriteAllText(filePath, JsonConvert.SerializeObject(jsn));
+            File.WriteAllText(FilePath, JsonConvert.SerializeObject(jsn));
         }
     }
 }

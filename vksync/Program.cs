@@ -7,7 +7,7 @@ namespace vksync
 {
     public class Program
     {
-        public static Config config { get; set; } = new Config();
+        public static Config Config { get; } = new Config();
 
         public static void Main(string[] args)
         {

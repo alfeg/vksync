@@ -25,7 +25,7 @@ namespace vksync.Sync
         {
             _args = args;
 
-            _reporter = new ConsoleReporter<ConsoleState>(new ConsoleState(), (state) =>
+            _reporter = new ConsoleReporter<ConsoleState>(new ConsoleState(), state =>
             {
                 var sb = ImmutableList<string>.Empty;
 
@@ -35,10 +35,7 @@ namespace vksync.Sync
                 sb = sb.Add(state.CurrentOperationStatus);
                 sb = sb.Add("");
 
-                foreach (var item in state.Downloads)
-                {
-                    sb = sb.Add($"[{item.PercentComplete}]: {item.Title}");
-                }
+                sb = state.Downloads.Aggregate(sb, (current, item) => current.Add($"[{item.PercentComplete}]: {item.Title}"));
 
                 sb = sb.Add("");
 
@@ -52,7 +49,7 @@ namespace vksync.Sync
 
                     if (state.TotalSongsToDownload > 0)
                     {
-                        var songAvgSize = totalMb / (double)(state.ItemsDownloaded == 0 ? 1 : state.ItemsDownloaded);
+                        var songAvgSize = totalMb / (state.ItemsDownloaded == 0 ? 1 : state.ItemsDownloaded);
                         var estSizeToDownload = songAvgSize*state.TotalSongsToDownload;
                         
                         var eta = TimeSpan.FromSeconds((estSizeToDownload - totalMb) / avgSpeed);
@@ -192,7 +189,7 @@ namespace vksync.Sync
             {
                 int offset = 0;
                 int batch = 200;
-                int vkCount = 0;
+                int vkCount;
 
                 do
                 {

@@ -10,11 +10,10 @@ namespace vksync.Sync
 
         public override bool Equals(object obj)
         {
-            if (obj == null) return false;
-
-            if (obj is Music)
+            var music = obj as Music;
+            if (music != null)
             {
-                var item = obj as Music;
+                var item = music;
 
                 return item.Title.Equals(Title);
             }
