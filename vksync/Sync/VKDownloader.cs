@@ -54,7 +54,7 @@ namespace vksync.Sync
                         
                         var eta = TimeSpan.FromSeconds((estSizeToDownload - totalMb) / avgSpeed);
                         
-                        sb = sb.Add($"Elapsed: {_stopwatch.Elapsed.ToString("00:00:00")} ETA: {eta.ToString("00:00:00")}");
+                        sb = sb.Add($"Elapsed: {_stopwatch.Elapsed.ToString(@"hh\:mm\:ss")} ETA: {eta.ToString(@"hh\:mm\:ss")}");
                     }
                 }
 
